@@ -13,7 +13,7 @@ class FrameRequest(BaseModel):
 class FrameResponse(BaseModel):
     video_id: str
     frame_index: int
-    image: str    s
+    image: str
 
 class NodesResponse(BaseModel):
     nodes: List[NodeInfo]

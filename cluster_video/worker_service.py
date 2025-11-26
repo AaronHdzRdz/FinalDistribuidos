@@ -26,6 +26,8 @@ ADMIN_URL = f"http://{ADMIN_HOST}:{ADMIN_PORT}"
 
 WORKER_HOST = os.getenv("WORKER_HOST") or get_local_ip()
 WORKER_PORT = int(os.getenv("WORKER_PORT", "8002"))  
+# Filtro configurado por entorno: invert (default), grayscale, canny, blur, sepia, none
+WORKER_FILTER = (os.getenv("WORKER_FILTER", "invert") or "invert").lower()
 
 app = FastAPI(title="Worker Node")
 
@@ -47,7 +49,27 @@ def encode_image(img: np.ndarray) -> str:
     return base64.b64encode(buffer).decode("utf-8")
 
 def process_image(img: np.ndarray) -> np.ndarray:
-    return img
+    if WORKER_FILTER == "invert":
+        return cv2.bitwise_not(img)
+    elif WORKER_FILTER == "grayscale":
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    elif WORKER_FILTER == "canny":
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 100, 200)
+        return cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    elif WORKER_FILTER == "blur":
+        return cv2.GaussianBlur(img, (5, 5), 0)
+    elif WORKER_FILTER == "sepia":
+        kernel = np.array([[0.272, 0.534, 0.131],
+                           [0.349, 0.686, 0.168],
+                           [0.393, 0.769, 0.189]])
+        sepia = cv2.transform(img, kernel)
+        return np.clip(sepia, 0, 255).astype(np.uint8)
+    elif WORKER_FILTER == "none":
+        return img
+    else:
+        return img
     
 
 @app.on_event("startup")
