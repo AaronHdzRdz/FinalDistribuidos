@@ -1,4 +1,3 @@
-# broker_service.py
 import asyncio
 import base64
 import os
@@ -12,7 +11,6 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from common import FrameRequest, FrameResponse, NodesResponse
 
-# ------------ VARIABLES DE ENTORNO ------------
 ADMIN_HOST = os.getenv("ADMIN_HOST", "127.0.0.1")
 ADMIN_PORT = int(os.getenv("ADMIN_PORT", "8000"))
 ADMIN_URL = f"http://{ADMIN_HOST}:{ADMIN_PORT}"
@@ -22,10 +20,9 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 app = FastAPI(title="Broker Service")
 
-# Configurar CORS para permitir peticiones desde el frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción, especifica los orígenes permitidos
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,9 +31,7 @@ app.add_middleware(
 video_status: Dict[str, str] = {}
 video_files: Dict[str, str] = {}
 
-# ------------ UTILIDADES ------------
 def encode_frame(frame):
-    # Usar PNG para evitar pérdida de calidad
     _, buffer = cv2.imencode(".png", frame)
     return base64.b64encode(buffer).decode("utf-8")
 
@@ -63,7 +58,6 @@ async def filter_reachable(nodes: List[str]) -> List[str]:
                 print(f"[BROKER] Nodo no alcanzable: {n}")
     return reachable
 
-# ------------ ENDPOINT: CLIENTE SUBE VIDEO ------------
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
     video_id = str(uuid.uuid4())
@@ -83,7 +77,6 @@ async def upload_video(file: UploadFile = File(...)):
 
     return {"video_id": video_id, "status": video_status[video_id]}
 
-# ------------ PROCESAMIENTO DISTRIBUIDO ------------
 async def process_frame_with_retry(
     client: httpx.AsyncClient,
     frame_idx: int,
@@ -91,7 +84,6 @@ async def process_frame_with_retry(
     nodes: List[str],
     video_id: str
 ) -> tuple[int, np.ndarray]:
-    """Procesa un frame con reintentos en diferentes nodos"""
     frame_b64 = encode_frame(frame)
     req = FrameRequest(
         video_id=video_id,
@@ -99,7 +91,6 @@ async def process_frame_with_retry(
         image=frame_b64,
     )
 
-    # Intentar con distintos nodos si uno falla
     start_node = frame_idx % len(nodes)
     for attempt in range(len(nodes)):
         node_url = nodes[(start_node + attempt) % len(nodes)]
@@ -140,16 +131,14 @@ async def process_video(video_id: str, video_path: str):
     if len(nodes) == 0:
         raise RuntimeError("No hay nodos registrados")
 
-    # Solo usar nodos alcanzables
     nodes = await filter_reachable(nodes)
     if len(nodes) == 0:
         raise RuntimeError("No hay nodos alcanzables")
 
     print(f"[BROKER] Procesando con {len(nodes)} worker(s) en paralelo")
 
-    # Procesar frames en paralelo (hasta 10 frames simultáneos)
     async with httpx.AsyncClient() as client:
-        batch_size = min(10, len(nodes) * 3)  # 3 frames por worker simultáneamente
+        batch_size = min(10, len(nodes) * 3) 
         processed_frames: Dict[int, np.ndarray] = {}
         
         for i in range(0, len(frames), batch_size):
@@ -159,7 +148,6 @@ async def process_video(video_id: str, video_path: str):
                 for idx, frame in enumerate(batch)
             ]
             
-            # Procesar batch en paralelo
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
             for result in results:
@@ -170,14 +158,12 @@ async def process_video(video_id: str, video_path: str):
             
             print(f"[BROKER] Progreso: {min(i + batch_size, len(frames))}/{len(frames)} frames")
 
-    # ---- Reconstrucción del video ----
     out_path = os.path.join(OUTPUT_DIR, f"{video_id}_output.mp4")
     
-    # Usar H264 para mejor calidad (o mp4v como fallback)
     try:
-        fourcc = cv2.VideoWriter_fourcc(*"avc1")  # H264
+        fourcc = cv2.VideoWriter_fourcc(*"avc1")  
     except:
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # Fallback
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")  
     
     writer = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
 
@@ -191,7 +177,6 @@ async def process_video(video_id: str, video_path: str):
 
     print(f"[BROKER] Video final guardado en {out_path}")
 
-# ------------ ENDPOINTS DE ESTADO Y DESCARGA ------------
 @app.get("/status/{video_id}")
 def status(video_id: str):
     return {"video_id": video_id, "status": video_status.get(video_id, "unknown")}

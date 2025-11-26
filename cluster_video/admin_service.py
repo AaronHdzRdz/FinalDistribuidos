@@ -1,4 +1,3 @@
-# admin_service.py
 from fastapi import FastAPI
 from typing import Dict
 from common import NodeInfo, NodesResponse
