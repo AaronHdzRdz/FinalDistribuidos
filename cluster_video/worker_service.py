@@ -51,14 +51,20 @@ def decode_image(b64: str) -> np.ndarray:
     return cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
 def encode_image(img: np.ndarray) -> str:
-    _, buffer = cv2.imencode(".jpg", img)
+    # Usar PNG para evitar pérdida de calidad
+    _, buffer = cv2.imencode(".png", img)
     return base64.b64encode(buffer).decode("utf-8")
 
 def process_image(img: np.ndarray) -> np.ndarray:
-    # EJEMPLO: gris + bordes
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 100, 200)
-    return cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    # Devolver imagen original sin modificar
+    # Si quieres aplicar algún efecto, puedes modificar aquí
+    return img
+    
+    # Ejemplos de efectos que puedes usar:
+    # return cv2.GaussianBlur(img, (5, 5), 0)  # Desenfoque
+    # return cv2.flip(img, 1)  # Espejo horizontal
+    # return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)  # Rotar 90°
+    # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY); return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)  # Blanco y negro
 
 # ------------ REGISTRO AUTOMÁTICO EN ADMIN ------------
 @app.on_event("startup")

@@ -1,9 +1,9 @@
 # broker_service.py
+import asyncio
 import base64
 import os
 import uuid
 from typing import Dict, List
-
 import cv2
 import numpy as np
 import httpx
@@ -36,7 +36,8 @@ video_files: Dict[str, str] = {}
 
 # ------------ UTILIDADES ------------
 def encode_frame(frame):
-    _, buffer = cv2.imencode(".jpg", frame)
+    # Usar PNG para evitar pérdida de calidad
+    _, buffer = cv2.imencode(".png", frame)
     return base64.b64encode(buffer).decode("utf-8")
 
 def decode_frame(b64):
@@ -83,6 +84,43 @@ async def upload_video(file: UploadFile = File(...)):
     return {"video_id": video_id, "status": video_status[video_id]}
 
 # ------------ PROCESAMIENTO DISTRIBUIDO ------------
+async def process_frame_with_retry(
+    client: httpx.AsyncClient,
+    frame_idx: int,
+    frame: np.ndarray,
+    nodes: List[str],
+    video_id: str
+) -> tuple[int, np.ndarray]:
+    """Procesa un frame con reintentos en diferentes nodos"""
+    frame_b64 = encode_frame(frame)
+    req = FrameRequest(
+        video_id=video_id,
+        frame_index=frame_idx,
+        image=frame_b64,
+    )
+
+    # Intentar con distintos nodos si uno falla
+    start_node = frame_idx % len(nodes)
+    for attempt in range(len(nodes)):
+        node_url = nodes[(start_node + attempt) % len(nodes)]
+        try:
+            print(f"[BROKER] Frame {frame_idx} → {node_url}")
+            resp = await client.post(
+                f"{node_url}/process-frame",
+                json=req.dict(),
+                timeout=60,
+            )
+            resp.raise_for_status()
+            resp_obj = FrameResponse(**resp.json())
+            processed = decode_frame(resp_obj.image)
+            print(f"[BROKER] ✓ Frame {frame_idx} procesado")
+            return (frame_idx, processed)
+        except Exception as e:
+            print(f"[BROKER] ✗ Frame {frame_idx} falló en {node_url}: {e}")
+            if attempt == len(nodes) - 1:
+                raise RuntimeError(f"Frame {frame_idx} falló en todos los nodos")
+            continue
+
 async def process_video(video_id: str, video_path: str):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 24
@@ -107,44 +145,40 @@ async def process_video(video_id: str, video_path: str):
     if len(nodes) == 0:
         raise RuntimeError("No hay nodos alcanzables")
 
-    processed_frames: Dict[int, np.ndarray] = {}
+    print(f"[BROKER] Procesando con {len(nodes)} worker(s) en paralelo")
 
+    # Procesar frames en paralelo (hasta 10 frames simultáneos)
     async with httpx.AsyncClient() as client:
-        for idx, frame in enumerate(frames):
-            frame_b64 = encode_frame(frame)
-            req = FrameRequest(
-                video_id=video_id,
-                frame_index=idx,
-                image=frame_b64,
-            )
-
-            # Intentar con distintos nodos si uno falla
-            tried = 0
-            start_node = idx % len(nodes)
-            success = False
-            while tried < len(nodes) and not success:
-                node_url = nodes[(start_node + tried) % len(nodes)]
-                print(f"[BROKER] Enviando frame {idx} → {node_url}")
-                try:
-                    resp = await client.post(
-                        f"{node_url}/process-frame",
-                        json=req.dict(),
-                        timeout=60,
-                    )
-                    resp.raise_for_status()
-                    resp_obj = FrameResponse(**resp.json())
-                    processed_frames[idx] = decode_frame(resp_obj.image)
-                    success = True
-                except Exception as e:
-                    print(f"[BROKER] Error con {node_url}: {e}")
-                    tried += 1
-
-            if not success:
-                raise RuntimeError("All connection attempts failed")
+        batch_size = min(10, len(nodes) * 3)  # 3 frames por worker simultáneamente
+        processed_frames: Dict[int, np.ndarray] = {}
+        
+        for i in range(0, len(frames), batch_size):
+            batch = frames[i:i + batch_size]
+            tasks = [
+                process_frame_with_retry(client, i + idx, frame, nodes, video_id)
+                for idx, frame in enumerate(batch)
+            ]
+            
+            # Procesar batch en paralelo
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for result in results:
+                if isinstance(result, Exception):
+                    raise result
+                frame_idx, processed = result
+                processed_frames[frame_idx] = processed
+            
+            print(f"[BROKER] Progreso: {min(i + batch_size, len(frames))}/{len(frames)} frames")
 
     # ---- Reconstrucción del video ----
     out_path = os.path.join(OUTPUT_DIR, f"{video_id}_output.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    
+    # Usar H264 para mejor calidad (o mp4v como fallback)
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*"avc1")  # H264
+    except:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # Fallback
+    
     writer = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
 
     for i in range(len(frames)):
@@ -167,4 +201,8 @@ def download(video_id: str):
     path = video_files.get(video_id)
     if not path:
         return {"error": "not_ready"}
-    return FileResponse(path, media_type="video/mp4")
+    return FileResponse(
+        path, 
+        media_type="video/mp4",
+        filename=f"{video_id}_processed.mp4"
+    )
