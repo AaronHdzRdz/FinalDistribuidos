@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import httpx
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from common import FrameRequest, FrameResponse, NodeInfo
 
 # ------------ OBTENER IP LOCAL ------------
@@ -33,6 +34,15 @@ WORKER_HOST = os.getenv("WORKER_HOST") or get_local_ip()
 WORKER_PORT = int(os.getenv("WORKER_PORT", "8002"))   # Puerto del worker
 
 app = FastAPI(title="Worker Node")
+
+# Permitir CORS por si se requiere pruebas directas
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ------------ UTILIDADES DE IMAGEN ------------
 def decode_image(b64: str) -> np.ndarray:
@@ -77,3 +87,8 @@ async def process_frame(frame_req: FrameRequest):
         frame_index=frame_req.frame_index,
         image=b64
     )
+
+# ------------ SALUD ------------
+@app.get("/health")
+def health():
+    return {"status": "ok"}

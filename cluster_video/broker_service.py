@@ -50,6 +50,18 @@ async def get_nodes() -> List[str]:
         data = NodesResponse(**r.json())
         return [n.url for n in data.nodes]
 
+async def filter_reachable(nodes: List[str]) -> List[str]:
+    reachable = []
+    async with httpx.AsyncClient() as client:
+        for n in nodes:
+            try:
+                resp = await client.get(f"{n}/health", timeout=5)
+                if resp.status_code == 200:
+                    reachable.append(n)
+            except Exception:
+                print(f"[BROKER] Nodo no alcanzable: {n}")
+    return reachable
+
 # ------------ ENDPOINT: CLIENTE SUBE VIDEO ------------
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
@@ -90,26 +102,45 @@ async def process_video(video_id: str, video_path: str):
     if len(nodes) == 0:
         raise RuntimeError("No hay nodos registrados")
 
+    # Solo usar nodos alcanzables
+    nodes = await filter_reachable(nodes)
+    if len(nodes) == 0:
+        raise RuntimeError("No hay nodos alcanzables")
+
     processed_frames: Dict[int, np.ndarray] = {}
 
     async with httpx.AsyncClient() as client:
         for idx, frame in enumerate(frames):
-            node_url = nodes[idx % len(nodes)]  # reparto round-robin
             frame_b64 = encode_frame(frame)
-
             req = FrameRequest(
                 video_id=video_id,
                 frame_index=idx,
-                image=frame_b64
+                image=frame_b64,
             )
 
-            print(f"[BROKER] Enviando frame {idx} → {node_url}")
+            # Intentar con distintos nodos si uno falla
+            tried = 0
+            start_node = idx % len(nodes)
+            success = False
+            while tried < len(nodes) and not success:
+                node_url = nodes[(start_node + tried) % len(nodes)]
+                print(f"[BROKER] Enviando frame {idx} → {node_url}")
+                try:
+                    resp = await client.post(
+                        f"{node_url}/process-frame",
+                        json=req.dict(),
+                        timeout=60,
+                    )
+                    resp.raise_for_status()
+                    resp_obj = FrameResponse(**resp.json())
+                    processed_frames[idx] = decode_frame(resp_obj.image)
+                    success = True
+                except Exception as e:
+                    print(f"[BROKER] Error con {node_url}: {e}")
+                    tried += 1
 
-            resp = await client.post(f"{node_url}/process-frame",
-                                     json=req.dict(),
-                                     timeout=60)
-            resp_obj = FrameResponse(**resp.json())
-            processed_frames[idx] = decode_frame(resp_obj.image)
+            if not success:
+                raise RuntimeError("All connection attempts failed")
 
     # ---- Reconstrucción del video ----
     out_path = os.path.join(OUTPUT_DIR, f"{video_id}_output.mp4")
